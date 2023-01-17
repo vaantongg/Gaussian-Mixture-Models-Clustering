@@ -1,0 +1,455 @@
+---
+title: "Clustering with Gaussian Mixture Model"
+author: "Van Tong"
+date: `r format(Sys.Date(), "%d. %B %Y")`
+output: 
+  html_document:
+    fig_width: 10
+    fig_height: 7
+    toc: true
+    toc_float: true
+    theme: yeti
+    highlight: kate
+    code_folding: hide
+    warning: false
+---
+
+# Loading libraries, functions, dependencies, set up
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# setting global directory
+knitr::opts_knit$set(warning = FALSE, message = FALSE) # turn off warnings and messages
+
+# Suppress summarise info
+options(dplyr.summarise.inform = FALSE)
+```
+
+```{r}
+if (!require("pacman")) install.packages("pacman")
+
+# loads all necessary libraries through the pacman package
+pacman::p_load(tidyverse, MASS, GGally, magrittr, randcorr, faux, corrplot, EFAtools, psych, mclust, ggalluvial) 
+
+pal <- c("#FF983B", "#AA3A39", "#FE4E4E", "#EE5397", "#634490", "#3466A5", "#00C4D4")
+```
+
+# Create simulated data
+
+```{r}
+matrix <- matrix()
+dt.matrix <- data.frame()
+dat <- data.frame()
+
+create_correlated_data <- function(numvar, seed_no = 1, numrow){
+  set.seed(seed_no)
+  
+  randcorr::randcorr(numvar) -> matrix
+  dt.matrix <- as.data.frame(matrix)
+  for (i in 1:ncol(dt.matrix)) {
+    for (j in 1:nrow(dt.matrix)) {
+        if (abs(dt.matrix[j,i])<0.5) {
+        dt.matrix[j,i] <- dt.matrix[j,i]*2
+        }
+      }
+  }
+  faux::rnorm_multi(numrow, numvar, 0, 1, matrix) -> dat
+  round(dat+abs(min(dat)),0) -> dat
+  
+  return(list(matrix, dat))
+}
+
+
+
+seed = 10:20
+temp.dat <- data.frame(id=1:500)
+
+for (j in seed) {
+  create_correlated_data(5,j,500) -> temp
+  temp[[2]] %<>% mutate(id=row_number()) %>% 
+    rename_at(vars(starts_with("X")), ~paste0(.,"_",j))
+  temp.dat <- left_join(temp.dat, temp[[2]], by="id")
+}
+
+
+fin.dat <- temp.dat[,-1]
+head(fin.dat)
+```
+
+# Explore data
+
+```{r}
+for (cols in colnames(fin.dat)) {
+  fin.dat %>% pull(cols) %>% hist(main = cols)
+}
+
+datamatrix <- cor(fin.dat)
+corrplot(datamatrix, method="circle")
+```
+
+Check if the data is suitable for factor analysis
+
+```{r}
+#Kaiser-Meyer-Olkin (KMO)
+EFAtools::KMO(cor(fin.dat), cor_method = "pearson")  #this simulated data is NOT SUITABLE for FA according to KMO
+#Bartlett’s Test of Sphericity
+EFAtools::BARTLETT(fin.dat)    #this simulated data is SUITABLE for FA according to Bartlett 
+```
+
+# Dimensionality Reduction
+
+2 Methods:
+
+- 1. Factor Analysis: to see which variables hang well together, then average them (mean method). FA by groups of questions that indicate a feature. E.g. Questions A1, A2, A3 ask to explore a person's level of risk favor.
+
+- 2. Principal Component Analysis: the idea is to compress all variables into a few components that store the most information to describe the whole data.
+
+## Factor Analysis
+
+FA on questions: X1_10 to X5_10
+
+```{r}
+question.X1_10.to.X5_10 <- fin.dat %>% dplyr::select(contains("10"))
+
+parallel <- fa.parallel(question.X1_10.to.X5_10) #look at FA actual data
+#FA suggests 1 to 2 factors
+
+factanal(question.X1_10.to.X5_10, factors=2, rotation = "varimax")
+#X1_10 and X4_10 load well tgt
+#X2_10 and X3_10 load well tgt #X5_10 doesnt load well with any
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X10.ft.1 = mean(c(X1_10, X4_10)),  #factor 1 is mean of X1_10 and X4_10
+         X10.ft.2 = mean(c(X2_10, X4_10))) 
+```
+
+FA on questions: X1_11 to X5_11
+
+```{r}
+question.X1_11.to.X5_11 <- fin.dat %>% dplyr::select(contains("11"))
+
+parallel <- fa.parallel(question.X1_11.to.X5_11) #look at FA actual data
+#FA suggests 1 to 2 factors
+
+factanal(question.X1_11.to.X5_11, factors=2, rotation = "varimax")
+#X2_11, X3_11 and X5_11 load well tgt
+#X1_11 can be a factor alone #X4_10 doesnt load well with any
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X11.ft.1 = mean(c(X2_11, X3_11, X5_11)),  
+         X11.ft.2 = X1_11) 
+```
+
+FA on questions: X1_12 to X5_12
+
+```{r}
+question.X1_12.to.X5_12 <- fin.dat %>% dplyr::select(contains("12"))
+
+parallel <- fa.parallel(question.X1_12.to.X5_12) #look at FA actual data
+#FA suggests 1 factor
+
+factanal(question.X1_12.to.X5_12, factors=1, rotation = "varimax")
+#All load pretty well tgt except X2_12
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X12.ft = mean(c(X1_12, X3_12, X4_12, X5_12))) 
+```
+
+FA on questions: X1_13 to X5_13
+
+```{r}
+question.X1_13.to.X5_13 <- fin.dat %>% dplyr::select(contains("13"))
+
+parallel <- fa.parallel(question.X1_13.to.X5_13) #look at FA actual data
+#FA suggests 1 to 2 factors
+
+factanal(question.X1_13.to.X5_13, factors=2, rotation = "varimax")
+#X3_13 and X5_13 tgt
+#X4_13 by itself   #X1 and X2 doesnt hang well
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X13.ft.1 = mean(c(X3_13, X5_13)),
+         X13.ft.2 = X4_13) 
+```
+
+FA on questions: X1_14 to X5_14
+
+```{r}
+question.X1_14.to.X5_14 <- fin.dat %>% dplyr::select(contains("14"))
+
+parallel <- fa.parallel(question.X1_14.to.X5_14) #look at FA actual data
+#FA suggests 1 to 2 factors
+
+factanal(question.X1_14.to.X5_14, factors=2, rotation = "varimax")
+#X3_14 and X4_14 tgt
+#X2_14 by itself   #X1 and X5 doesnt hang well
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X14.ft.1 = mean(c(X3_14, X4_14)),
+         X14.ft.2 = X2_14) 
+```
+
+FA on questions: X1_15 to X5_15
+
+```{r}
+question.X1_15.to.X5_15 <- fin.dat %>% dplyr::select(contains("15"))
+
+parallel <- fa.parallel(question.X1_15.to.X5_15) #look at FA actual data
+#FA suggests 1 to 2 factors
+
+factanal(question.X1_15.to.X5_15, factors=2, rotation = "varimax")
+#X2_15 and X5_15 tgt
+#X4_15 by itself   
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X15.ft.1 = mean(c(X2_15, X5_15)),
+         X15.ft.2 = X4_15) 
+```
+
+FA on questions: X1_16 to X5_16
+
+```{r}
+question.X1_16.to.X5_16 <- fin.dat %>% dplyr::select(contains("16"))
+
+parallel <- fa.parallel(question.X1_16.to.X5_16) #look at FA actual data
+#FA suggests 2 factors
+
+factanal(question.X1_16.to.X5_16, factors=2, rotation = "varimax")
+#X4 and X5 tgt
+#X2 by itself   #X1 and X3 dont hang well
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X16.ft.1 = mean(c(X4_16, X5_16)),
+         X16.ft.2 = X2_16) 
+```
+
+FA on questions: X1_17 to X5_17
+
+```{r}
+question.X1_17.to.X5_17 <- fin.dat %>% dplyr::select(contains("17"))
+
+parallel <- fa.parallel(question.X1_17.to.X5_17) #look at FA actual data
+#FA suggests 2 factors
+
+factanal(question.X1_17.to.X5_17, factors=2, rotation = "varimax")
+#X2 and X5 tgt
+#X4 by itself   #X1 and X3 dont hang well
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X17.ft.1 = mean(c(X2_17, X5_17)),
+         X17.ft.2 = X4_17) 
+```
+
+FA on questions: X1_18 to X5_18
+
+```{r}
+question.X1_18.to.X5_18 <- fin.dat %>% dplyr::select(contains("18"))
+
+parallel <- fa.parallel(question.X1_18.to.X5_18) #look at FA actual data
+#FA suggests 1 factor
+
+factanal(question.X1_18.to.X5_18, factors=1, rotation = "varimax")
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X18.ft = mean(c_across(ends_with("_18")))) 
+```
+
+FA on questions: X1_19 to X5_19
+
+```{r}
+question.X1_19.to.X5_19 <- fin.dat %>% dplyr::select(contains("19"))
+
+parallel <- fa.parallel(question.X1_19.to.X5_19) #look at FA actual data
+#FA suggests 2 factors
+
+factanal(question.X1_19.to.X5_19, factors=2, rotation = "varimax")
+#X1 and X2 tgt
+#X4 by itself   #X3 and X5 dont hang well
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X19.ft.1 = mean(c(X1_19, X2_19)),
+         X19.ft.2 = X4_19)
+```
+
+FA on questions: X1_19 to X5_19
+
+```{r}
+question.X1_20.to.X5_20 <- fin.dat %>% dplyr::select(contains("20"))
+
+parallel <- fa.parallel(question.X1_20.to.X5_20) #look at FA actual data
+#FA suggests 2 factors
+
+factanal(question.X1_20.to.X5_20, factors=2, rotation = "varimax")
+#X3, X4 tgt
+#X1, X5 tgt  #X2 doesnt hang well
+
+fin.dat %<>% 
+  rowwise() %>% 
+  mutate(X20.ft.1 = mean(c(X3_20, X4_20)),
+         X20.ft.2 = mean(c(X1_20, X5_20)))
+```
+
+# Gaussian Mixture Model (GMM)
+
+Features should be standardized since we want the units to be somewhat comparable.
+
+```{r}
+#take the output from FA 
+#then scale them because the model needs scaled data
+fin.dat %>% 
+  dplyr::select(contains("ft")) %>% 
+  scale() -> scaled.dat
+```
+
+*Steps of GMM*
+
+1. Find the Bayesian Information Criterion (BIC) values for the specified mixture models numbers of clusters.
+
+```{r}
+#plot of BIC values
+plot(mclustBIC(scaled.dat, G = 1:21))  
+#choose one with the highest peak, y-axis is number of clusters, in the box is the model
+#e.g. VVV model means the distribution is ellipsoidal, clusters have Variable shape, Variable volume, and Variable orientation
+#this simulated dataset seems to have no clusters
+#mclust on a real dataset that really is clustered will return the best BIC values that suggest the number of potential clusters, as well as the model (e.g. VVV, EEV, VEV) that indicates the shape of clusters
+```
+
+2. Fit a model based on information we get from step 1. 
+
+We don't gain any information from step 1 of the simulated dataset (because it's fake data). But let's imagine it returns 10 clusters and the optimal models can be VVV or VII.
+
+```{r}
+mc <- Mclust(scaled.dat, G=5:15,  modelNames=c("VVV", "VII")) #set G=8:15 because maybe there can be fewer or more clusters than 10 clusters; here, I do +/-5 from 10
+summary(mc) 
+```
+
+3. Update the BIC for parameterized GMM by taking the best from BIC results as returned by mclustBIC.
+
+Here, we re-run step 1 repeated times, each time we store BIC as input for next run; this means we update BIC using previous BIC values. 
+
+```{r}
+# use several random starting points
+BIC <- NULL
+for(j in 1:100) 
+{
+  rBIC <- mclustBIC(scaled.dat, verbose = FALSE,
+                    initialization = list(hcPairs = hcRandomPairs(scaled.dat)))
+  BIC <- mclustBICupdate(BIC, rBIC)
+}
+pickBIC(BIC)
+plot(BIC)
+```
+
+4. Fit a model using BIC from step 3
+
+```{r}
+mod <- Mclust(scaled.dat, x = BIC)
+summary(mod)
+
+mod$classification  #get clusters
+mod$z   #get conditional probabilities 
+#AKA probability of the most likely group: obs X in cluster A,B,C,etc.
+```
+
+5. Comparing model results using alluvial plots.
+
+We can create an alluvial graph to help compare and visualize across the different model classifications. If we see some consitency between different models, then we have some evidence of real clusters; otherwise, the model may just produce clusters randomly or out of noise.
+
+We can run different models with different selection of features/ variables (doing similar steps as above). Since the cluster solutions would be pretty sensitive to the input, we can try running a few different feature combinations (removing or retaining the highly correlated ones). Basically, we can run a model on all data, then run a model on the dataset without some highly correlated features, then compare them using alluvial plots.
+
+```{r}
+compare.model.data <- data.frame(
+                                 mod.init = factor(mc$classification),
+                                 mod.updatedBIC = factor(mod$classification),
+                                 Freq = 1
+                                 )
+
+#create alluvial plots
+ggplot(compare.model.data, aes(y = Freq, axis1=mod.init, axis2=mod.updatedBIC)) +
+  ggalluvial::geom_alluvium(aes(fill = mod.init)) +
+  scale_x_discrete(limits = c("Initial model", "Model with updated BIC"), expand = c(.2, .05)) +
+  guides(fill = FALSE) +
+  geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme_minimal() +
+  scale_fill_manual(values=c(pal[1], pal[6])) +
+  ggtitle("Comparison of Classification of Participants of Models")
+```
+
+6. Interpret results
+
+With behavioral data (based on my experience with BEworks data), we won't see clear-cut clusters. I suspect that this may be due to the facts that the range of likert-scale data is small and people aren't extremist to always respond 1 or 7 or something that would be more discrete and clear-cut --- thus the difference is small but there can still be clusters. Thus, reporting cluster labels/ classification will not be as reliable as investigating its probability.
+
+
+# GMM example
+
+Since my simulated data do not cluster, here's all the GMM steps above in one piece using iris dataset.
+
+```{r}
+#step 1
+plot(mclustBIC(iris[,1:4], G = 1:5)) #can be 2 or 3
+
+#step 2
+mc <- Mclust(iris[,1:4], G=1:5) #not specifying models here to see what mclust returns
+summary(mc) #so, 2 clusters, and model is VEV
+
+#step 3
+BIC <- NULL
+for(j in 1:100) 
+{
+  rBIC <- mclustBIC(iris[,1:4], verbose = FALSE,
+                    initialization = list(hcPairs = hcRandomPairs(iris[,1:4])))
+  BIC <- mclustBICupdate(BIC, rBIC)
+}
+pickBIC(BIC) #look at updated BIC results
+plot(BIC)
+
+#step 4
+mod <- Mclust(iris[,1:4], x = BIC)
+summary(mod)
+mod$z #probability
+mod$classification
+
+#step 5
+compare.model.data <- data.frame(
+                                 mod.init = factor(mc$classification),
+                                 mod.updatedBIC = factor(mod$classification),
+                                 Freq = 1
+                                 )
+
+ggplot(compare.model.data, aes(y = Freq, axis1=mod.init, axis2=mod.updatedBIC)) +
+  ggalluvial::geom_alluvium(aes(fill = mod.init)) +
+  scale_x_discrete(limits = c("Initial model", "Model with updated BIC"), expand = c(.2, .05)) +
+  guides(fill = FALSE) +
+  geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme_minimal() +
+  scale_fill_manual(values=c(pal[1], pal[6])) +
+  ggtitle("Comparison of Classification of Participants of Models")
+#classification is consistent
+#how to read alluvial plot:
+#we see that ALL bservation of cluster 1 in the initial model are labeled as cluster 2 in the BIC-updated model; which means that it's just different labels, the way data is clustered is the same between the 2 models
+#here we have perfect consistency; but with different dataset, we won't achieve this. It should be good as long as we can see some consistency.
+
+#here's how to plot the clusters
+plot(mod, what = "classification")
+#iris dataset is a simple, clear-cut one, unlike behavioral data, thus plotting it this way is reasonable
+#on the contrary, clusters of behavioral data won't appear well on plots this way (since classification isn't clear-cut thus we use probability)
+```
+
+
+
+
+
+
